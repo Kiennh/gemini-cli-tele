@@ -18,6 +18,7 @@ import {
   debugLogger,
   SESSION_FILE_PREFIX,
   partListUnionToString,
+  AuthType,
 } from '@google/gemini-cli-core';
 import type { Part } from '@google/genai';
 import { v4 as uuidv4 } from 'uuid';
@@ -38,12 +39,6 @@ const workspaceDir = path.resolve(
 if (!botToken) {
   debugLogger.error('TELEGRAM_BOT_TOKEN is not set');
   process.exit(1);
-}
-
-if (!geminiApiKey) {
-  debugLogger.warn(
-    'GEMINI_API_KEY is not set. The bot will attempt to use existing CLI authentication.',
-  );
 }
 
 // Map to store GeminiClient and Scheduler per chat
@@ -73,12 +68,24 @@ async function createGeminiSession(
     interactive: false,
   });
 
-  // Set API Key in environment if provided
+  await config.initialize();
+
+  // Determine AuthType
+  let authType: AuthType = AuthType.LOGIN_WITH_GOOGLE;
   if (geminiApiKey) {
     process.env['GEMINI_API_KEY'] = geminiApiKey;
+    authType = AuthType.USE_GEMINI;
+  } else if (
+    process.env['GOOGLE_API_KEY'] ||
+    (process.env['GOOGLE_CLOUD_PROJECT'] &&
+      process.env['GOOGLE_CLOUD_LOCATION'])
+  ) {
+    authType = AuthType.USE_VERTEX_AI;
   }
 
-  await config.initialize();
+  debugLogger.log(`[Telegram] Refreshing auth with type: ${authType}`);
+  await config.refreshAuth(authType);
+
   const client = new GeminiClient(config);
 
   if (options.history) {
@@ -163,7 +170,7 @@ bot.command('sessions', async (ctx) => {
       const filePath = path.join(chatsDir, sessionFiles[i]);
       const contentStr = await fs.readFile(filePath, 'utf8');
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-      const content = JSON.parse(contentStr) as ConversationRecord;
+      const content = JSON.parse(contentStr) as unknown as ConversationRecord;
       const firstMsg = content.messages[0] as MessageRecord | undefined;
       const summary =
         content.summary ||
@@ -184,7 +191,9 @@ bot.command('sessions', async (ctx) => {
 bot.command('resume', async (ctx) => {
   const chatId = ctx.chat.id;
   const args = ctx.message.text.split(' ');
-  debugLogger.log(`[Telegram] Resume command from ${chatId}: ${ctx.message.text}`);
+  debugLogger.log(
+    `[Telegram] Resume command from ${chatId}: ${ctx.message.text}`,
+  );
   if (args.length < 2) {
     await ctx.reply('Please provide a session index. Example: /resume 1');
     return;
@@ -218,7 +227,7 @@ bot.command('resume', async (ctx) => {
     const filePath = path.join(chatsDir, sessionFile);
     const contentStr = await fs.readFile(filePath, 'utf8');
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    const conversation = JSON.parse(contentStr) as ConversationRecord;
+    const conversation = JSON.parse(contentStr) as unknown as ConversationRecord;
 
     // Simplified conversion logic
     const clientHistory: Array<{ role: 'user' | 'model'; parts: Part[] }> = [];
@@ -228,7 +237,7 @@ bot.command('resume', async (ctx) => {
         let parts: Part[];
         if (Array.isArray(msg.content)) {
           // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-          parts = msg.content as Part[];
+          parts = msg.content as unknown as Part[];
         } else {
           parts = [{ text: partListUnionToString(msg.content) }];
         }
@@ -266,7 +275,9 @@ bot.on('text', async (ctx) => {
     let responseText = '';
 
     const processMessages = async (parts: Part[]) => {
-      debugLogger.log(`[Telegram] Sending message parts to Gemini for ${chatId}`);
+      debugLogger.log(
+        `[Telegram] Sending message parts to Gemini for ${chatId}`,
+      );
       const responseStream = client.sendMessageStream(
         parts,
         new AbortController().signal,
@@ -279,19 +290,25 @@ bot.on('text', async (ctx) => {
         if (event.type === GeminiEventType.Content) {
           responseText += event.value;
           if (event.value) {
-             debugLogger.log(`[Telegram] Received content chunk for ${chatId}`);
+            debugLogger.log(`[Telegram] Received content chunk for ${chatId}`);
           }
         } else if (event.type === GeminiEventType.ToolCallRequest) {
-          debugLogger.log(`[Telegram] Tool call request for ${chatId}: ${event.value.name}`);
+          debugLogger.log(
+            `[Telegram] Tool call request for ${chatId}: ${event.value.name}`,
+          );
           toolCallRequests.push(event.value);
         } else if (event.type === GeminiEventType.Error) {
-          debugLogger.error(`[Telegram] Gemini error for ${chatId}: ${event.value.error}`);
+          debugLogger.error(
+            `[Telegram] Gemini error for ${chatId}: ${event.value.error}`,
+          );
           throw event.value.error;
         }
       }
 
       if (toolCallRequests.length > 0) {
-        debugLogger.log(`[Telegram] Scheduling ${toolCallRequests.length} tools for ${chatId}`);
+        debugLogger.log(
+          `[Telegram] Scheduling ${toolCallRequests.length} tools for ${chatId}`,
+        );
         const completedToolCalls = await scheduler.schedule(
           toolCallRequests,
           new AbortController().signal,
@@ -316,7 +333,9 @@ bot.on('text', async (ctx) => {
     await processMessages([{ text }]);
 
     if (responseText.trim()) {
-      debugLogger.log(`[Telegram] Sending response back to ${chatId} (${responseText.length} chars)`);
+      debugLogger.log(
+        `[Telegram] Sending response back to ${chatId} (${responseText.length} chars)`,
+      );
       // Split message if it's too long for Telegram (4096 chars)
       const maxLength = 4000;
       if (responseText.length > maxLength) {
@@ -327,11 +346,15 @@ bot.on('text', async (ctx) => {
         await ctx.reply(responseText);
       }
     } else {
-      debugLogger.warn(`[Telegram] Gemini returned empty response for ${chatId}`);
+      debugLogger.warn(
+        `[Telegram] Gemini returned empty response for ${chatId}`,
+      );
       await ctx.reply('Gemini returned an empty response.');
     }
   } catch (error) {
-    debugLogger.error(`[Telegram] Error handling message for ${chatId}: ${error}`);
+    debugLogger.error(
+      `[Telegram] Error handling message for ${chatId}: ${error}`,
+    );
     const errorMessage = error instanceof Error ? error.message : String(error);
     await ctx.reply(`❌ An error occurred: ${errorMessage}`);
   }
