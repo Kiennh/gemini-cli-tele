@@ -1,0 +1,28 @@
+{
+  "name": "@google/gemini-cli-telegram-bot",
+  "version": "0.30.0-nightly.20260210.a2174751d",
+  "description": "Telegram Bot for Gemini CLI",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "node ../../scripts/build_package.js",
+    "start": "node dist/src/index.js",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier --write .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/gemini-cli-core": "file:../core",
+    "dotenv": "^16.6.1",
+    "telegraf": "^4.16.3",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
