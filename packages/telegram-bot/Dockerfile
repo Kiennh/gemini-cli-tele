@@ -23,8 +23,9 @@ COPY . .
 # Build the project
 RUN npm run build --workspaces
 
-# Set environment variables
+# Set default environment variables
 ENV NODE_ENV=production
+ENV GEMINI_WORKSPACE_DIR=/app
 
 # Start the bot
 CMD ["npm", "start", "--workspace", "@google/gemini-cli-telegram-bot"]
