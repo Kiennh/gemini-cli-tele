@@ -108,6 +108,7 @@ async function getOrCreateSession(chatId: number) {
 }
 
 bot.start((ctx) => {
+  debugLogger.log(`[Telegram] Bot started by user ${ctx.from.id}`);
   void ctx.reply(
     `Welcome to Gemini CLI Telegram Bot!\nConnected to: ${workspaceDir}\n\nCommands:\n/sessions - List available sessions\n/resume <index> - Resume a session\n/reset - Start a new session`,
   );
@@ -121,6 +122,7 @@ bot.help((ctx) => {
 
 bot.command('reset', async (ctx) => {
   const chatId = ctx.chat.id;
+  debugLogger.log(`[Telegram] Reset command from ${chatId}`);
   const session = sessions.get(chatId);
   if (session) {
     await session.client.resetChat();
@@ -133,6 +135,8 @@ bot.command('reset', async (ctx) => {
 });
 
 bot.command('sessions', async (ctx) => {
+  const chatId = ctx.chat.id;
+  debugLogger.log(`[Telegram] Sessions command from ${chatId}`);
   try {
     const config = new Config({
       sessionId: 'temp',
@@ -172,7 +176,7 @@ bot.command('sessions', async (ctx) => {
     const message = `Available sessions (last 10):\n${list.reverse().slice(0, 10).join('\n')}`;
     await ctx.reply(message);
   } catch (error) {
-    debugLogger.error(`Error listing sessions: ${error}`);
+    debugLogger.error(`[Telegram] Error listing sessions: ${error}`);
     await ctx.reply('Failed to list sessions.');
   }
 });
@@ -180,6 +184,7 @@ bot.command('sessions', async (ctx) => {
 bot.command('resume', async (ctx) => {
   const chatId = ctx.chat.id;
   const args = ctx.message.text.split(' ');
+  debugLogger.log(`[Telegram] Resume command from ${chatId}: ${ctx.message.text}`);
   if (args.length < 2) {
     await ctx.reply('Please provide a session index. Example: /resume 1');
     return;
@@ -243,7 +248,7 @@ bot.command('resume', async (ctx) => {
 
     await ctx.reply(`Resumed session: ${conversation.summary || 'Untitled'}`);
   } catch (error) {
-    debugLogger.error(`Error resuming session: ${error}`);
+    debugLogger.error(`[Telegram] Error resuming session: ${error}`);
     await ctx.reply('Failed to resume session.');
   }
 });
@@ -251,6 +256,7 @@ bot.command('resume', async (ctx) => {
 bot.on('text', async (ctx) => {
   const text = ctx.message.text;
   const chatId = ctx.chat.id;
+  debugLogger.log(`[Telegram] Received message from ${chatId}: ${text}`);
 
   try {
     const { client, scheduler, config } = await getOrCreateSession(chatId);
@@ -260,6 +266,7 @@ bot.on('text', async (ctx) => {
     let responseText = '';
 
     const processMessages = async (parts: Part[]) => {
+      debugLogger.log(`[Telegram] Sending message parts to Gemini for ${chatId}`);
       const responseStream = client.sendMessageStream(
         parts,
         new AbortController().signal,
@@ -271,14 +278,20 @@ bot.on('text', async (ctx) => {
       for await (const event of responseStream) {
         if (event.type === GeminiEventType.Content) {
           responseText += event.value;
+          if (event.value) {
+             debugLogger.log(`[Telegram] Received content chunk for ${chatId}`);
+          }
         } else if (event.type === GeminiEventType.ToolCallRequest) {
+          debugLogger.log(`[Telegram] Tool call request for ${chatId}: ${event.value.name}`);
           toolCallRequests.push(event.value);
         } else if (event.type === GeminiEventType.Error) {
+          debugLogger.error(`[Telegram] Gemini error for ${chatId}: ${event.value.error}`);
           throw event.value.error;
         }
       }
 
       if (toolCallRequests.length > 0) {
+        debugLogger.log(`[Telegram] Scheduling ${toolCallRequests.length} tools for ${chatId}`);
         const completedToolCalls = await scheduler.schedule(
           toolCallRequests,
           new AbortController().signal,
@@ -303,6 +316,7 @@ bot.on('text', async (ctx) => {
     await processMessages([{ text }]);
 
     if (responseText.trim()) {
+      debugLogger.log(`[Telegram] Sending response back to ${chatId} (${responseText.length} chars)`);
       // Split message if it's too long for Telegram (4096 chars)
       const maxLength = 4000;
       if (responseText.length > maxLength) {
@@ -313,10 +327,11 @@ bot.on('text', async (ctx) => {
         await ctx.reply(responseText);
       }
     } else {
+      debugLogger.warn(`[Telegram] Gemini returned empty response for ${chatId}`);
       await ctx.reply('Gemini returned an empty response.');
     }
   } catch (error) {
-    debugLogger.error(`Error handling message: ${error}`);
+    debugLogger.error(`[Telegram] Error handling message for ${chatId}: ${error}`);
     const errorMessage = error instanceof Error ? error.message : String(error);
     await ctx.reply(`❌ An error occurred: ${errorMessage}`);
   }
